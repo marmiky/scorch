@@ -1,0 +1,376 @@
+#!/usr/bin/env python3
+# coding=utf-8
+
+# ISC License (ISC)
+#
+# Copyright (c) 2017, Michele Martina <marmiky@gmail.com>
+#
+# Permission to use, copy, modify, and/or distribute this software for any
+# purpose with or without fee is hereby granted, provided that the above
+# copyright notice and this permission notice appear in all copies.
+#
+# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+# WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+# ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+# WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+# ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+# OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+import argparse
+import csv
+import errno
+import json
+import math
+import os
+import pickle
+import sys
+import tempfile
+import time
+
+def build_arg_parser():
+    desc = 'scorch db converter'
+    parser = argparse.ArgumentParser(description=desc)
+    parser.add_argument('sourcedbs',
+                        type=str,
+                        nargs='+',
+                        help='source databases')
+
+    parser.add_argument('destdb',
+                        type=str,
+                        help='destination database')
+
+    parser.add_argument('-s','--stype',
+                        type=str,
+                        default="v1.1",
+                        help='source databases type')
+                        
+    parser.add_argument('-d','--dtype',
+                        type=str,
+                        default="v1.1",
+                        help='destination database type')
+
+    parser.add_argument('-r','--relto',
+                        type=str,
+                        default="",
+                        help='do path relative to')
+
+    parser.add_argument('-x','--suff',
+                        type=str,
+                        default="",
+                        help='add a suffix')
+
+    parser.add_argument('-w','--wdr',
+                        action='store_true',
+                        help='remove windows drive')
+
+    parser.add_argument('-p','--ptype',
+                        type=str,
+                        default="",
+                        help='change paths to windows or unix (enter win/unix)')
+
+    parser.add_argument('-v','--verbose',
+                        action='store_true',
+                        help='print details of data')
+
+    return parser
+
+def humansize(nbytes):
+    suffixes = ['B','KB','MB','GB','TB','PB','ZB']
+    rank = 0
+    if nbytes > 0:
+      rank = int(math.log(nbytes,1024))
+    rank = min(rank, len(suffixes) - 1)
+    human = nbytes / (1024.0 ** rank)
+    f = ('%.2f' % human).rstrip('0').rstrip('.')
+    return '%s%s' % (f, suffixes[rank])
+
+def read_db_pickle(filepath):
+    db = {}
+    try:
+        with open(filepath,'rb') as f:
+            db = pickle.load(f)
+    except (KeyboardInterrupt,SystemExit):
+        raise
+    except Exception as e:
+        dirname = os.path.dirname(filepath)
+        if not os.path.isdir(dirname):
+            raise
+    return db
+
+def read_db_csv(filepath):
+    db = {}
+    try:
+        with open(filepath,'r',newline='',encoding='utf-8') as f:
+            reader = csv.reader(f,delimiter=',',quotechar='"')
+            for (filename,md5,size,mode,mtime) in reader:
+                db[filename]=(md5,int(size),int(mode),float(mtime))
+    except (KeyboardInterrupt,SystemExit):
+        raise
+    except Exception as e:
+        dirname = os.path.dirname(filepath)
+        if not os.path.isdir(dirname):
+            raise
+    return db
+
+def read_db_json(filepath):
+    db = {}
+    try:
+        with open(filepath) as data_file:    
+            db = json.load(data_file)
+    except (KeyboardInterrupt,SystemExit):
+        raise
+    except Exception as e:
+        dirname = os.path.dirname(filepath)
+        if not os.path.isdir(dirname):
+            raise
+    return db
+
+def write_db_pickle(db,filepath):
+    try:
+        basepath = os.path.dirname(filepath)
+        (fd,tmpfilepath) = tempfile.mkstemp(dir=basepath)
+        with os.fdopen(fd,'wb') as f:
+            pickle.dump(db,f)
+        os.replace(tmpfilepath,filepath)
+    except (KeyboardInterrupt,SystemExit):
+        raise
+    except Exception as e:
+        print('Error writing DB:',e)
+
+def write_db_csv(db,filepath):
+    try:
+        basepath = os.path.dirname(filepath)
+        (fd,tmpfilepath) = tempfile.mkstemp(dir=basepath)
+        with os.fdopen(fd,'wt',encoding='utf-8',newline='') as f:
+            writer = csv.writer(f,delimiter=',')
+            for (k,(md5,size,mode,mtime)) in db.items():
+                row = (k,md5,size,mode,mtime)
+                writer.writerow(row)
+        os.replace(tmpfilepath,filepath)
+    except (KeyboardInterrupt,SystemExit):
+        raise
+    except Exception as e:
+        print('Error writing DB:',e)
+
+def write_db_json(db,filepath):
+    try:
+        basepath = os.path.dirname(filepath)
+        (fd,tmpfilepath) = tempfile.mkstemp(dir=basepath)
+        with os.fdopen(fd,'w') as f:
+            json.dump(db,f)
+        os.replace(tmpfilepath,filepath)
+    except (KeyboardInterrupt,SystemExit):
+        raise
+    except Exception as e:
+        print('Error writing DB:',e)
+
+# Remove windows drive unit
+def remove_win_drive(db):
+    newdb = {}
+    try:
+        for (k,v) in db.items():
+          if k.startswith(":\\",1):
+            k = k[2:]
+          newdb[k] = v
+        return newdb
+    except (KeyboardInterrupt,SystemExit):
+        raise
+    except Exception as e:
+        print('Error removing win drive:',e)
+        raise
+
+# Change path type
+def change_path_type(db,ptype):
+    try:
+        if ptype == "win":
+          newdb = {}
+          for (k,v) in db.items():
+            k = k.replace("/","\\")
+            newdb[k] = v
+          return newdb
+        elif ptype == "unix":
+          newdb = {}
+          for (k,v) in db.items():
+            k = k.replace("\\","/")
+            newdb[k] = v
+          return newdb
+        else:
+          return db
+    except (KeyboardInterrupt,SystemExit):
+        raise
+    except Exception as e:
+        print('Error changing path sep:',e)
+        raise
+
+# Add a suffix to paths
+def add_suffix(db,suff):
+    newdb = {}
+    try:
+        for (k,v) in db.items():
+          k = suff + k
+          newdb[k] = v
+        return newdb
+    except (KeyboardInterrupt,SystemExit):
+        raise
+    except Exception as e:
+        print('Error adding suffix:',e)
+        raise
+
+def conv_db_v1(db,verbose):
+    newdb = {}
+    try:
+      for (k,(md5,st)) in db.items():
+        if verbose:
+          print("{0} {1} {2} {3} {4}".format(md5,k,str(st.st_mode),humansize(st.st_size),time.ctime(st.st_mtime)))
+        newdb[k] = (md5,st.st_mode,st.st_size,st.st_mtime)
+      return newdb
+    except (KeyboardInterrupt,SystemExit):
+        raise
+    except Exception as e:
+        print('Error converting DBs:',e)
+        raise
+
+def to_relative(db,verbose,relto):
+    newdb = {}
+    rlen = len(relto)
+    try:
+      for (k,v) in db.items():
+        if k.startswith(relto):
+          k = k[rlen:]
+        if verbose:
+          print(k)
+        newdb[k] = v
+      return newdb
+    except (KeyboardInterrupt,SystemExit):
+        raise
+    except Exception as e:
+        print('Error setting relative paths:',e)
+        raise
+
+# Merges more dbs together
+def load_dbs(dbpaths,stype,verbose):
+  db = None
+  for db_file in dbpaths:
+    dbpath = os.path.realpath(db_file)
+    if verbose:
+      print("Reading db " + dbpath + " ...")
+    # Read the db
+    if stype == "csv":
+      new_db = read_db_csv(dbpath)
+    elif stype == "json":
+      new_db = read_db_json(dbpath)
+    else: # default read a pickled db
+      new_db = read_db_pickle(dbpath)
+    print("db len = " + str(len(new_db)))
+    if db == None:
+      db = new_db
+    else: #Merge dbs
+      db = {**db, **new_db}
+  print("final db len = " + str(len(db)))
+  return db
+
+def check_files(files):
+  rv = []
+  for f in files:
+    realpath = os.path.realpath(f)
+    rv.append(realpath)
+  return rv
+
+def main():
+    parser = build_arg_parser()
+    args   = parser.parse_args()
+
+    sdbpaths     = check_files(args.sourcedbs)
+    ddbpath      = os.path.realpath(args.destdb)
+    verbose      = args.verbose
+    stype        = args.stype
+    dtype        = args.dtype
+    relto        = args.relto
+    wdr          = args.wdr
+    ptype        = args.ptype
+    suff         = args.suff
+
+    rv = 0
+    old_size = 0
+    new_size = 0
+
+    for sdbpath in sdbpaths:
+      print("source db        : " + sdbpath)
+    print("source db type   : " + stype)
+    print("destination db   : " + ddbpath)
+    print("dest db type     : " + dtype)
+    if verbose:
+      print("verbose          : " + str(verbose))
+    if relto != "":
+      print("relative to      : " + relto)
+    if wdr:
+      print("win drive remove : " + str(wdr))
+    if ptype != "":
+      print("path type        : " + ptype)
+    if suff != "":
+      print("suffix to add    : " + suff)
+   
+    try:
+      # check parameters
+      #if stype == dtype and relto == "":
+      #  raise Exception("db types must be different!")
+      if dtype == "v1":
+        raise Exception("can not convert to db v1!")
+
+        
+      db = load_dbs(sdbpaths,stype,verbose)
+        
+        
+      # Get size old db
+      old_size = len(db)
+      if verbose:
+        print("source size = " + str(old_size))
+      # Converto old db to new
+      if stype == "v1" and dtype != "json":
+        db = conv_db_v1(db,verbose);
+      # If requested remove the windows drive letter
+      if wdr:
+        db = remove_win_drive(db)
+      # Change path type
+      db = change_path_type(db,ptype)
+      # Make relative paths
+      if relto != "":
+        #if not relto.endswith(os.path.sep):
+        #  relto += os.path.sep
+        print("relto=" + relto)
+        db = to_relative(db,verbose,relto)
+      # Add a suffix
+      if suff != "":
+        db = add_suffix(db,suff)
+      # Get size new db
+      new_size = len(db)
+      if verbose:
+        print("dest size = " + str(new_size))
+      # Check old and new size 
+      if old_size != new_size:
+        raise Exception("Conversion error! Sizes different: {0} - {1}".format(old_size,new_size))
+      # Write the new db
+      if dtype == "csv":
+        write_db_csv(db,ddbpath)
+      elif dtype == "json":
+        write_db_json(db,ddbpath)
+      else: # default write a pickled db
+        write_db_pickle(db,ddbpath)
+      # End
+      print("db converted!")
+    except (KeyboardInterrupt,SystemExit):
+        rv = 1
+    except IOError as e:
+        rv = 1
+        if e.errno != errno.EPIPE:
+            print(e)
+    except Exception as e:
+        rv = 1
+        print(e)
+
+    sys.exit(rv)
+
+
+if __name__ == "__main__":
+    main()

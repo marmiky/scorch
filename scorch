@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
+# coding=utf-8
 
 # ISC License (ISC)
 #
-# Copyright (c) 2016, Antonio SJ Musumeci <trapexit@spawn.link>
+# Copyright (c) 2017, Michele Martina <marmiky@gmail.com>
+#
+# Version 1.1
 #
 # Permission to use, copy, modify, and/or distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -31,8 +34,7 @@ import sys
 import tempfile
 import time
 
-
-DEFAULT_DB = '/var/tmp/scorch.db'
+DEFAULT_DB = 'scorch.db'
 
 # Define a compact version of stat object for serialization
 class CompactStat(object):
@@ -157,7 +159,9 @@ def print_filepath(count,total,filepath):
 
 def humansize(nbytes):
     suffixes = ['B','KB','MB','GB','TB','PB','ZB']
-    rank = int(math.log(nbytes,1024))
+    rank = 0
+    if nbytes > 0:
+      rank = int(math.log(nbytes,1024))
     rank = min(rank, len(suffixes) - 1)
     human = nbytes / (1024.0 ** rank)
     f = ('%.2f' % human).rstrip('0').rstrip('.')
@@ -351,7 +355,7 @@ def cleanup_hashes(db,basepath,restrict,fnfilter,sort,
                    maxactions,verbose,breakonerror,
                    dbadd,dbremove):
     rv = 1
-    filepaths = filter_filepaths(db.keys(),basepath,fnfilter,os.path.exists)
+    filepaths = filter_filepaths(db.keys(),basepath,fnfilter,checkFileForCleanUp)
     sort(filepaths)
 
     actions = 0
@@ -369,6 +373,16 @@ def cleanup_hashes(db,basepath,restrict,fnfilter,sort,
 
     return rv
 
+def checkFileForCleanUp(filepath):
+  if not os.path.exists(filepath):
+    if verbose:
+      print(filepath + " not Found...")
+    return False
+  if os.path.islink(filepath):
+    if verbose:
+      print(filepath + " is link...")
+    return False
+  return True
 
 def list_hashes(db,basepath,restrict,fnfilter,sort,
                 maxactions,verbose,breakonerror,
@@ -605,7 +619,6 @@ def sort_fun(sort):
         return (lambda l: l.sort(key=sort_key,reverse=True))
     return (lambda l: None)
 
-
 def read_db(filepath):
     db = {}
     try:
@@ -622,8 +635,8 @@ def read_db(filepath):
 def write_db(db,filepath,dbadd,dbremove):
     try:
 
-        for (k,v) in dbadd.items():
-            db[k] = v;
+        for (k,(hashval,mode,size,mtime)) in dbadd.items():
+            db[k] = (hashval,mode,size,mtime);
         for k in dbremove:
             del db[k]
 
@@ -631,24 +644,11 @@ def write_db(db,filepath,dbadd,dbremove):
         (fd,tmpfilepath) = tempfile.mkstemp(dir=basepath)
         with os.fdopen(fd,'wb') as f:
             pickle.dump(db,f)
-        if os.name == 'nt' and os.path.isfile(filepath):
-            os.remove(filepath) # Windows: Remove the db file before for no [WinError 183] (Cannot create a file when that file already exists)
-        os.rename(tmpfilepath,filepath)
+        os.replace(tmpfilepath,filepath)
     except (KeyboardInterrupt,SystemExit):
         raise
     except Exception as e:
-        print('Error writing checksum DB:',e)
-
-
-def process_directories(dirs):
-    rv = []
-    for d in dirs:
-        realpath = os.path.realpath(d)
-        if realpath != '/':
-            realpath + os.path.sep
-        rv.append(realpath)
-    return rv
-
+        print('Error writing hashes DB:',e)
 
 def main():
     parser = build_arg_parser()
@@ -662,22 +662,28 @@ def main():
     fnfilter     = filter_fun(args.fnfilter)
     maxactions   = args.max
     breakonerror = args.break_on_error
-    directories  = process_directories(args.dir)
 
     rv = 0
     try:
-        for directory in directories:
+        for directory in args.dir:
+            if verbose:
+              print("dir: " + directory)
+            
             db = read_db(dbpath)
+            
+            if verbose:
+              print("n. of items: " + str(len(db)))
+
             dbadd = {}
             dbremove = []
-
+            
             rv = rv or func(db,directory,restrict,fnfilter,sort,
                             maxactions,verbose,breakonerror,
                             dbadd,dbremove)
-
+            
             if len(dbadd) or len(dbremove):
                 write_db(db,dbpath,dbadd,dbremove)
-
+            
             if breakonerror and rv:
                 break
 
